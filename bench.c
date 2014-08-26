@@ -1011,7 +1011,6 @@ void print_put_get_stats(int signum) {
       buf << "[GET_HEADER] (timestamp) (sec_lapsed) (count) (sum) (avg) (min) (med) (90p) (95p) (99p) (99.9p) (max) (std)" << endl;
     }
     buf << "[PUT_HEADER] (timestamp) (sec_lapsed) (count) (sum) (avg) (min) (med) (90p) (95p) (99p) (99.9p) (max) (std) (bytes_ins)" << endl;
-    buf << "[DB_HEADER]  (timestamp) (mb_read) (mb_written) (compaction_sec) [ (mb_stored_per_level) ] (bytes_ins)" << endl;
   }
   if (num_get_threads) {
     buf << "[GET_STATS] " << cur_time << " " << sec_lapsed << " " << gcount << " " << gsum << " " << (int)gavg << " "
@@ -1020,14 +1019,6 @@ void print_put_get_stats(int signum) {
   buf << "[PUT_STATS] " << cur_time << " " << sec_lapsed << " " << pcount << " " << psum << " " << (int)pavg << " "
       << pmin << " " << pperc[500] << " " << pperc[900] << " " << pperc[950] << " " << pperc[990] << " " << pperc[999] << " " << pmax << " " << pstd << " "
       << bytes_inserted << endl;
-
-  buf << "[DB_STATS]  " << cur_time;
-  std::string mbytes_read_written, compaction_time_sec, mbytes_stored_per_level;
-  db->GetProperty("leveldb.mbytes-read-written", &mbytes_read_written);
-  db->GetProperty("leveldb.compaction-time-sec", &compaction_time_sec);
-  db->GetProperty("leveldb.mbytes-stored-per-level", &mbytes_stored_per_level);
-  buf << " " << mbytes_read_written << " " << compaction_time_sec
-      << " [ " << mbytes_stored_per_level << " ]" << " " << bytes_inserted << endl;
 
   cerr << buf.str() << flush;
 
