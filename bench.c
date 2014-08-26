@@ -18,7 +18,6 @@
 #include <map>
 #include <vector>
 
-
 using std::cout;
 using std::cerr;
 using std::endl;
@@ -33,9 +32,7 @@ using std::flush;
 #define TRUE_FALSE(b) ((b) == true ? "true" : "false")
 #define ISDEFAULT(flag) (flag == 0 ? "(default)" : "")
 
-//------------------------------------------------------------------------------
-// forward declaration of functions
-//------------------------------------------------------------------------------
+
 
 void     *put_routine(void *args);
 void     *get_routine(void *args);
@@ -50,10 +47,7 @@ void      check_duplicate_arg_and_set(int *flag, int opt);
 int       numdigits(uint64_t num);
 double    round(double r);
 
-//------------------------------------------------------------------------------
 // default values
-//------------------------------------------------------------------------------
-
 const char     *DEFAULT_DB_DIR =     "/tmp/testdb";
 const uint64_t  DEFAULT_MEMSTORE_SIZE =  104857600;
 const uint32_t  MAX_KEY_SIZE =                1024;

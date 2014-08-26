@@ -4,7 +4,7 @@
 all: bench
 
 bench: bench.c leveldb/libleveldb.a
-	g++ -o $@ $< -g -Wall -Wno-sign-compare -lpthread -pthread -Ileveldb//include/ leveldb/libleveldb.a -lsnappy
+	g++ -o $@ $< -g -Wall -Wno-sign-compare -lpthread -pthread -Ileveldb/include/ leveldb/libleveldb.a -lsnappy
 
 leveldb/libleveldb.a:
 	[ -d leveldb ] || git clone https://github.com/gmargari/leveldb
