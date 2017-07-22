@@ -1,7 +1,3 @@
-#include "leveldb/db.h"
-#include "leveldb/env.h"    // for NowMicros()
-#include "RequestThrottle.h"
-
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
@@ -18,6 +14,29 @@
 #include <map>
 #include <vector>
 
+// LevelDB includes
+#if defined(ROCKSDB_COMPILE)
+#include "rocksdb/db.h"
+#include "rocksdb/env.h"
+#elif defined(HYPERLEVELDB_COMPILE)
+#include "hyperleveldb/db.h"
+#include "hyperleveldb/env.h"
+#else
+#include "leveldb/db.h"
+#include "leveldb/env.h"    // for NowMicros()
+#endif
+
+#include "RequestThrottle.h"
+
+#if defined(ROCKSDB_COMPILE)
+namespace leveldb = rocksdb;
+#elif defined(FLODB_COMPILE)
+namespace leveldb {
+	size_t kBigValueSize = 256;
+	int kNumThreads = 4;
+}
+#endif
+
 using std::cout;
 using std::cerr;
 using std::endl;
@@ -31,8 +50,6 @@ using std::flush;
 #define min(a,b) ((a) < (b) ? (a) : (b))
 #define TRUE_FALSE(b) ((b) == true ? "true" : "false")
 #define ISDEFAULT(flag) (flag == 0 ? "(default)" : "")
-
-
 
 void     *put_routine(void *args);
 void     *get_routine(void *args);
@@ -713,7 +730,7 @@ void *put_routine(void *args) {
       }
       if (uflag) {
         // TODO: sprintf(key, "%s", key) -> undefined behaviour!
-        sprintf(key, "%s.%Lu", key, i);  // make unique
+        sprintf(key, "%s.%llu", key, (long long)i);  // make unique
         keylen += 1 + numdigits(i);
       }
       randstr_r(value, valuesize, &vseed);
