@@ -15,7 +15,7 @@
 #include <vector>
 
 // LevelDB includes
-#if defined(ROCKSDB_COMPILE)
+#if defined(ROCKSDB_COMPILE) || defined(TRIAD_COMPILE)
 #include "rocksdb/db.h"
 #include "rocksdb/env.h"
 #elif defined(HYPERLEVELDB_COMPILE)
@@ -28,7 +28,7 @@
 
 #include "RequestThrottle.h"
 
-#if defined(ROCKSDB_COMPILE)
+#if defined(ROCKSDB_COMPILE) || defined(TRIAD_COMPILE)
 namespace leveldb = rocksdb;
 #elif defined(FLODB_COMPILE)
 namespace leveldb {
