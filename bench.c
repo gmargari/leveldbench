@@ -228,7 +228,7 @@ int main(int argc, char **argv) {
   leveldb::Options options;
   leveldb::WriteOptions write_options;
   leveldb::ReadOptions read_options;
-  struct thread_args *targs;
+  std::vector<struct thread_args> targs;
   pthread_t *thread;
   struct tm *current;
   time_t now;
@@ -552,8 +552,7 @@ int main(int argc, char **argv) {
   //--------------------------------------------------------------------------
   // fill-in arguments of put thread and get threads
   //--------------------------------------------------------------------------
-  targs = (struct thread_args *) malloc((1 + num_get_threads) *
-                      sizeof(thread_args));
+  targs.resize(1 + num_get_threads);
   get_latency_mutex.resize(num_get_threads);
   get_latency.resize(num_get_threads);
   for (i = 0; i < 1 + num_get_threads; i++) {
@@ -649,7 +648,6 @@ int main(int argc, char **argv) {
   free(end_key);
   free(value);
   free(thread);
-  free(targs);
   delete db;
 
   return EXIT_SUCCESS;
