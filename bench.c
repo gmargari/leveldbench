@@ -922,7 +922,7 @@ void calculate_statistics(const std::map<uint32_t, uint32_t>& latency,
  *                            print_put_get_stats
  *============================================================================*/
 void print_put_get_stats(int signum) {
-  static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+  static pthread_mutex_t print_stats_mutex = PTHREAD_MUTEX_INITIALIZER;
   static uint64_t old_time = 0;
   uint32_t psum;
   uint32_t pcount;
@@ -948,22 +948,20 @@ void print_put_get_stats(int signum) {
 
   // if mutex locked, signal was caught while last signal handling is not
   // completed: return immediately (we'll catch next signal)
-  if (pthread_mutex_trylock(&mutex) != 0) {
+  if (pthread_mutex_trylock(&print_stats_mutex) != 0) {
     return;
-  }
-
-  //----------------------------------------------------------------------------
-  // lock in order to exclusively access stats
-  //----------------------------------------------------------------------------
-  pthread_mutex_lock(&g_put_latency_mutex);
-  for (int i = 0; i < g_num_get_threads; i++) {
-    pthread_mutex_lock(&g_get_latency_mutex[i]);
   }
 
   //----------------------------------------------------------------------------
   // collect/calculate get stats
   //----------------------------------------------------------------------------
+
   if (g_num_get_threads) {
+    // lock in order to exclusively access
+    for (int i = 0; i < g_num_get_threads; i++) {
+      pthread_mutex_lock(&g_get_latency_mutex[i]);
+    }
+
     // merge all maps in a single map
     std::map<uint32_t, uint32_t> all_get_latencies;
     for (int i = 0; i < g_num_get_threads; i++) {
@@ -974,30 +972,42 @@ void print_put_get_stats(int signum) {
       }
     }
 
-    calculate_statistics(all_get_latencies, gsum, gcount, gmin, gmax, gavg, gstd, gperc);
-
-    //----------------------------------------------------------------------------
     // reset get stats
-    //----------------------------------------------------------------------------
     for (int i = 0; i < g_num_get_threads; i++) {
       g_get_latency[i].clear();
     }
+
+    // resume threads
+    for (int i = 0; i < g_num_get_threads; i++) {
+      pthread_mutex_unlock(&g_get_latency_mutex[i]);
+    }
+
+    // calculate statistics on new map
+    calculate_statistics(all_get_latencies, gsum, gcount, gmin, gmax, gavg, gstd, gperc);
   }
 
   //----------------------------------------------------------------------------
   // collect/calculate put stats
   //----------------------------------------------------------------------------
+
+  // lock in order to exclusively access
+  pthread_mutex_lock(&g_put_latency_mutex);
+
+  // calculate statistics
   calculate_statistics(g_put_latency, psum, pcount, pmin, pmax, pavg, pstd, pperc);
   uint64_t bytes_inserted = g_bytes_inserted;
 
-  //----------------------------------------------------------------------------
   // reset put stats
-  //----------------------------------------------------------------------------
   g_put_latency.clear();
 
+  // resume puth thread
+  pthread_mutex_unlock(&g_put_latency_mutex);
+
   //----------------------------------------------------------------------------
+  // print stats to stderr
+  //----------------------------------------------------------------------------
+
   // calculate time passed since last call
-  //----------------------------------------------------------------------------
   uint64_t cur_time = leveldb::Env::Default()->NowMicros() / 1000;
   float sec_lapsed;
   if (old_time == 0) {
@@ -1007,9 +1017,6 @@ void print_put_get_stats(int signum) {
   }
   old_time = cur_time;
 
-  //----------------------------------------------------------------------------
-  // print stats to stderr
-  //----------------------------------------------------------------------------
   std::ostringstream buf;
   buf.str("");
   static bool first_time = true;
@@ -1030,15 +1037,7 @@ void print_put_get_stats(int signum) {
 
   cerr << buf.str() << flush;
 
-  //----------------------------------------------------------------------------
-  // resume threads
-  //----------------------------------------------------------------------------
-  pthread_mutex_unlock(&g_put_latency_mutex);
-  for (int i = 0; i < g_num_get_threads; i++) {
-    pthread_mutex_unlock(&g_get_latency_mutex[i]);
-  }
-
-  pthread_mutex_unlock(&mutex);
+  pthread_mutex_unlock(&print_stats_mutex);
 }
 
 /*============================================================================
