@@ -871,11 +871,59 @@ void update_get_stats(int tid, uint32_t latency) {
 /*============================================================================
  *                            print_put_get_stats
  *============================================================================*/
+void calculate_statistics(const std::map<uint32_t, uint32_t>& latency,
+                          uint32_t& lat_sum, uint32_t& lat_count,
+                          uint32_t& lat_min, uint32_t& lat_max,
+                          float& lat_avg, float& lat_std,
+                          std::map<uint32_t, uint32_t>& lat_perc) {
+  // Calculate sum, count, avg (will be needed to calculate std below)
+  lat_sum = 0;
+  lat_count = 0;
+  std::map<uint32_t, uint32_t>::const_iterator it;
+  for (it = latency.begin(); it != latency.end(); ++it) {
+    uint32_t latency = it->first;
+    uint32_t count = it->second;
+    lat_sum += latency * count;
+    lat_count += count;
+  }
+
+  lat_avg = 0;
+  if (lat_count) {
+    lat_avg = lat_sum / (float)lat_count;
+  }
+
+  // Calculate median, 90% perc, 95% perc, 99% perc, 99.9% perc, std
+  uint32_t tmp_count = 0;
+  lat_min = latency.begin()->first;
+  lat_max = latency.begin()->first;
+  lat_std = 0;
+  for (it = latency.begin(); it != latency.end(); ++it) {
+    uint32_t latency = it->first;
+    uint32_t count = it->second;
+
+    lat_min = min(lat_min, latency);
+    lat_max = max(lat_max, latency);
+    tmp_count += count;
+
+    // (a-x)^2 + ... + (a-x)^2 = n * (a-x)^2
+    lat_std += count * powl(latency - lat_avg, 2);
+    if (lat_perc.find(500) == lat_perc.end() && tmp_count >= 0.500 * lat_count) { lat_perc[500] = latency; }
+    if (lat_perc.find(900) == lat_perc.end() && tmp_count >= 0.900 * lat_count) { lat_perc[900] = latency; }
+    if (lat_perc.find(950) == lat_perc.end() && tmp_count >= 0.950 * lat_count) { lat_perc[950] = latency; }
+    if (lat_perc.find(990) == lat_perc.end() && tmp_count >= 0.990 * lat_count) { lat_perc[990] = latency; }
+    if (lat_perc.find(999) == lat_perc.end() && tmp_count >= 0.999 * lat_count) { lat_perc[999] = latency; }
+  }
+  if (lat_count) {
+    lat_std = sqrt(lat_std / lat_count);
+  }
+}
+
+/*============================================================================
+ *                            print_put_get_stats
+ *============================================================================*/
 void print_put_get_stats(int signum) {
   static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
   static uint64_t old_time = 0;
-  static int first_time = 1;
-  uint64_t cur_time;
   uint32_t psum;
   uint32_t pcount;
   uint32_t pmax;
@@ -888,12 +936,9 @@ void print_put_get_stats(int signum) {
   float gavg;
   float pstd;
   float gstd;
-  float sec_lapsed;
-  uint32_t tmp_count;
   std::map<uint32_t, uint32_t>::iterator it;
   std::map<uint32_t, uint32_t> pperc;
   std::map<uint32_t, uint32_t> gperc;
-  std::ostringstream buf;
 
   // needed in some architectures
   if (signal(SIGALRM, print_put_get_stats) == SIG_ERR) {
@@ -918,105 +963,32 @@ void print_put_get_stats(int signum) {
   //----------------------------------------------------------------------------
   // collect/calculate get stats
   //----------------------------------------------------------------------------
-  gsum = 0;
-  gcount = 0;
-  gavg = 0;
-  gmin = g_put_latency.begin()->first;
-  gmax = g_put_latency.begin()->first;
-
-  // sum, count, min, max
-  for (int i = 0; i < g_num_get_threads; i++) {
-    for (it = g_get_latency[i].begin(); it != g_get_latency[i].end(); ++it) {
-      uint32_t latency = it->first, count = it->second;
-      gsum += latency * count;
-      gcount += count;
-      gmin = min(gmin, latency);
-      gmax = max(gmax, latency);
+  if (g_num_get_threads) {
+    // merge all maps in a single map
+    std::map<uint32_t, uint32_t> all_get_latencies;
+    for (int i = 0; i < g_num_get_threads; i++) {
+      for (it = g_get_latency[i].begin(); it != g_get_latency[i].end(); ++it) {
+          uint32_t latency = it->first;
+          uint32_t count = it->second;
+          all_get_latencies[latency] += count;
+      }
     }
-  }
 
-  // avg
-  if (gcount) {
-    gavg = gsum / (float)gcount;
-  }
+    calculate_statistics(all_get_latencies, gsum, gcount, gmin, gmax, gavg, gstd, gperc);
 
-  // merge all maps in a single map
-  std::map<uint32_t, uint32_t> tmp_map;
-  for (int i = 0; i < g_num_get_threads; i++) {
-    for (it = g_get_latency[i].begin(); it != g_get_latency[i].end(); ++it) {
-        uint32_t latency = it->first;
-        uint32_t count = it->second;
-        tmp_map[latency] += count;
+    //----------------------------------------------------------------------------
+    // reset get stats
+    //----------------------------------------------------------------------------
+    for (int i = 0; i < g_num_get_threads; i++) {
+      g_get_latency[i].clear();
     }
-  }
-
-  // median, 90% perc, 95%, 99% perc, 99.9% perc, std
-  tmp_count = 0;
-  gstd = 0;
-  for (it = tmp_map.begin(); it != tmp_map.end(); ++it) {
-    uint32_t latency = it->first;
-    uint32_t count = it->second;
-    tmp_count += count;
-    // (a-x)^2 + ... + (a-x)^2 = n * (a-x)^2
-    gstd += count * powl(latency - gavg, 2);
-    if (gperc.find(500) == gperc.end() && tmp_count >= 0.500 * gcount) { gperc[500] = latency; }
-    if (gperc.find(900) == gperc.end() && tmp_count >= 0.900 * gcount) { gperc[900] = latency; }
-    if (gperc.find(950) == gperc.end() && tmp_count >= 0.950 * gcount) { gperc[950] = latency; }
-    if (gperc.find(990) == gperc.end() && tmp_count >= 0.990 * gcount) { gperc[990] = latency; }
-    if (gperc.find(999) == gperc.end() && tmp_count >= 0.999 * gcount) { gperc[999] = latency; }
-  }
-  if (gcount) {
-    gstd = sqrt(gstd / gcount);
-  }
-
-  //----------------------------------------------------------------------------
-  // reset get stats
-  //----------------------------------------------------------------------------
-  for (int i = 0; i < g_num_get_threads; i++) {
-    g_get_latency[i].clear();
   }
 
   //----------------------------------------------------------------------------
   // collect/calculate put stats
   //----------------------------------------------------------------------------
-  psum = 0;
-  pcount = 0;
-  pavg = 0;
-  pmin = g_put_latency.begin()->first;
-  pmax = g_put_latency.begin()->first;
-
-  // sum, count, min, max
-  for (it = g_put_latency.begin(); it != g_put_latency.end(); ++it) {
-    uint32_t latency = it->first, count = it->second;
-    psum += latency * count;
-    pcount += count;
-    pmin = min(pmin, latency);
-    pmax = max(pmax, latency);
-  }
-
-  // avg
-  if (pcount) {
-    pavg = psum / (float)pcount;
-  }
-
-  // median, 90% perc, 95% perc, 99% perc, 99.9% perc, std
-  tmp_count = 0;
-  pstd = 0;
-  for (it = g_put_latency.begin(); it != g_put_latency.end(); ++it) {
-    uint32_t latency = it->first;
-    uint32_t count = it->second;
-    tmp_count += count;
-    // (a-x)^2 + ... + (a-x)^2 = n * (a-x)^2
-    pstd += count * powl(latency - pavg, 2);
-    if (pperc.find(500) == pperc.end() && tmp_count >= 0.500 * pcount) { pperc[500] = latency; }
-    if (pperc.find(900) == pperc.end() && tmp_count >= 0.900 * pcount) { pperc[900] = latency; }
-    if (pperc.find(950) == pperc.end() && tmp_count >= 0.950 * pcount) { pperc[950] = latency; }
-    if (pperc.find(990) == pperc.end() && tmp_count >= 0.990 * pcount) { pperc[990] = latency; }
-    if (pperc.find(999) == pperc.end() && tmp_count >= 0.999 * pcount) { pperc[999] = latency; }
-  }
-  if (pcount) {
-    pstd = sqrt(pstd / pcount);
-  }
+  calculate_statistics(g_put_latency, psum, pcount, pmin, pmax, pavg, pstd, pperc);
+  uint64_t bytes_inserted = g_bytes_inserted;
 
   //----------------------------------------------------------------------------
   // reset put stats
@@ -1026,7 +998,8 @@ void print_put_get_stats(int signum) {
   //----------------------------------------------------------------------------
   // calculate time passed since last call
   //----------------------------------------------------------------------------
-  cur_time = leveldb::Env::Default()->NowMicros() / 1000;
+  uint64_t cur_time = leveldb::Env::Default()->NowMicros() / 1000;
+  float sec_lapsed;
   if (old_time == 0) {
     sec_lapsed = 0; //DEFAULT_STATS_PRINT_INTERVAL;
   } else {
@@ -1037,9 +1010,11 @@ void print_put_get_stats(int signum) {
   //----------------------------------------------------------------------------
   // print stats to stderr
   //----------------------------------------------------------------------------
+  std::ostringstream buf;
   buf.str("");
+  static bool first_time = true;
   if (first_time) {
-    first_time = 0;
+    first_time = false;
     if (g_num_get_threads) {
       buf << "[GET_HEADER] (timestamp) (sec_lapsed) (count) (sum) (avg) (min) (med) (90p) (95p) (99p) (99.9p) (max) (std)" << endl;
     }
@@ -1051,7 +1026,7 @@ void print_put_get_stats(int signum) {
   }
   buf << "[PUT_STATS] " << cur_time << " " << sec_lapsed << " " << pcount << " " << psum << " " << (int)pavg << " "
       << pmin << " " << pperc[500] << " " << pperc[900] << " " << pperc[950] << " " << pperc[990] << " " << pperc[999] << " " << pmax << " " << pstd << " "
-      << g_bytes_inserted << endl;
+      << bytes_inserted << endl;
 
   cerr << buf.str() << flush;
 
