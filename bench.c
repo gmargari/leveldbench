@@ -107,13 +107,13 @@ struct thread_args {
   leveldb::ReadOptions read_options;
 };
 
-bool put_thread_finished = false;
-int num_get_threads = 0;
-std::map<uint32_t, uint32_t> put_latency;                  // put latency stats
-pthread_mutex_t put_latency_mutex;
-std::vector<std::map<uint32_t, uint32_t> > get_latency;    // get latency stats
-std::vector<pthread_mutex_t> get_latency_mutex;
-uint64_t bytes_inserted = 0;
+bool g_put_thread_finished = false;
+int g_num_get_threads = 0;
+std::map<uint32_t, uint32_t> g_put_latency;                  // put latency stats
+pthread_mutex_t g_put_latency_mutex;
+std::vector<std::map<uint32_t, uint32_t> > g_get_latency;    // get latency stats
+std::vector<pthread_mutex_t> g_get_latency_mutex;
+uint64_t g_bytes_inserted = 0;
 
 leveldb::DB *db;  // multiple get threads and 1 put thread can use it concurrently
 
@@ -297,7 +297,7 @@ int main(int argc, char **argv) {
 
       case 'g':
         check_duplicate_arg_and_set(&gflag, myopt);
-        num_get_threads = atoi(optarg);
+        g_num_get_threads = atoi(optarg);
         break;
 
       case 'G':
@@ -390,7 +390,7 @@ int main(int argc, char **argv) {
     num_keys_to_insert = insertbytes / (keysize + valuesize);
   }
   if (gflag == 0) {
-    num_get_threads = DEFAULT_NUM_GET_THREADS;
+    g_num_get_threads = DEFAULT_NUM_GET_THREADS;
   }
   if (Gflag == 0) {
     get_thrput = DEFAULT_GET_THRPUT;
@@ -499,7 +499,7 @@ int main(int argc, char **argv) {
   //--------------------------------------------------------------------------
   // print values of parameters
   //--------------------------------------------------------------------------
-  cerr << "# memstore_size:       " << setw(15) << b2mb(memstore_size) << " MB  " << ISDEFAULT(mflag) << endl;
+  cerr << "# memstore_size:       " << setw(15) << b2mb(memstore_size) << " MB    " << ISDEFAULT(mflag) << endl;
   if (sflag) {
     cerr << "# insert_bytes:        " << setw(15) << "?     (keys and values will be read from stdin)" << endl;
     cerr << "# key_size:            " << setw(15) << "?     (keys and values will be read from stdin)" << endl;
@@ -509,7 +509,7 @@ int main(int argc, char **argv) {
     cerr << "# zipf_keys:           " << setw(15) << "?     (keys and values will be read from stdin)" << endl;
     cerr << "# ordered_keys:        " << setw(15) << "?     (keys and values will be read from stdin)" << endl;
   } else {
-    cerr << "# insert_bytes:        " << setw(15) << b2mb(insertbytes) << " MB  " << ISDEFAULT(iflag) << endl;
+    cerr << "# insert_bytes:        " << setw(15) << b2mb(insertbytes) << " MB    " << ISDEFAULT(iflag) << endl;
     cerr << "# key_size:            " << setw(15) << keysize << " B     " << ISDEFAULT(kflag) << endl;
     cerr << "# value_size:          " << setw(15) << valuesize << " B     " << ISDEFAULT(vflag) << endl;
     cerr << "# keys_to_insert:      " << setw(15) << num_keys_to_insert << endl;
@@ -524,7 +524,7 @@ int main(int argc, char **argv) {
     }
   }
   cerr << "# put_throughput:      " << setw(15) << put_thrput << " req/s " << ISDEFAULT(Pflag) << endl;
-  cerr << "# get_threads:         " << setw(15) << num_get_threads << "       " << ISDEFAULT(gflag) << endl;
+  cerr << "# get_threads:         " << setw(15) << g_num_get_threads << "       " << ISDEFAULT(gflag) << endl;
   cerr << "# get_throughput:      " << setw(15) << get_thrput << " req/s " << ISDEFAULT(Gflag) << endl;
   cerr << "# get_type:            " << setw(15) << (range_get_size ? "range" : "point") << endl;
   if (range_get_size) {
@@ -552,10 +552,10 @@ int main(int argc, char **argv) {
   //--------------------------------------------------------------------------
   // fill-in arguments of put thread and get threads
   //--------------------------------------------------------------------------
-  targs.resize(1 + num_get_threads);
-  get_latency_mutex.resize(num_get_threads);
-  get_latency.resize(num_get_threads);
-  for (i = 0; i < 1 + num_get_threads; i++) {
+  targs.resize(1 + g_num_get_threads);
+  g_get_latency_mutex.resize(g_num_get_threads);
+  g_get_latency.resize(g_num_get_threads);
+  for (i = 0; i < 1 + g_num_get_threads; i++) {
     targs[i].tid = i;
     targs[i].uflag = uflag;
     targs[i].sflag = sflag;
@@ -603,8 +603,8 @@ int main(int argc, char **argv) {
   //--------------------------------------------------------------------------
   // create put thread and get threads
   //--------------------------------------------------------------------------
-  thread = (pthread_t *)malloc((1 + num_get_threads) * sizeof(pthread_t));
-  for (i = 0; i < 1 + num_get_threads; i++) {
+  thread = (pthread_t *)malloc((1 + g_num_get_threads) * sizeof(pthread_t));
+  for (i = 0; i < 1 + g_num_get_threads; i++) {
     if (i == 0) {
       retval = pthread_create(&thread[i], NULL, put_routine, (void *)&targs[i]);
     } else {
@@ -619,7 +619,7 @@ int main(int argc, char **argv) {
   //--------------------------------------------------------------------------
   // wait for threads to finish
   //--------------------------------------------------------------------------
-  for (i = 0; i < 1 + num_get_threads; i++) {
+  for (i = 0; i < 1 + g_num_get_threads; i++) {
     pthread_join(thread[i], NULL);
   }
 
@@ -751,7 +751,7 @@ void *put_routine(void *args) {
     }
 
     leveldb::Status s = db->Put(targs->write_options, key, value);
-    bytes_inserted += keylen + valuelen;
+    g_bytes_inserted += keylen + valuelen;
     if (!s.ok()) {
       printf("Error in Put(%s): %s\n", key, s.ToString().c_str());
     }
@@ -764,7 +764,7 @@ void *put_routine(void *args) {
     }
   }
 
-  put_thread_finished = true;
+  g_put_thread_finished = true;
 
   free(key);
   free(value);
@@ -788,7 +788,7 @@ void *get_routine(void *args) {
   RequestThrottle throttler(targs->get_thrput);
   struct timeval start, end;
 
-  while (!put_thread_finished) {
+  while (!g_put_thread_finished) {
 
     //--------------------------------------------------------------
     // throttle request rate
@@ -854,18 +854,18 @@ void *get_routine(void *args) {
  *                            update_put_stats
  *============================================================================*/
 void update_put_stats(uint32_t latency) {
-  pthread_mutex_lock(&put_latency_mutex);
-  put_latency[latency]++;
-  pthread_mutex_unlock(&put_latency_mutex);
+  pthread_mutex_lock(&g_put_latency_mutex);
+  g_put_latency[latency]++;
+  pthread_mutex_unlock(&g_put_latency_mutex);
 }
 
 /*============================================================================
  *                            update_get_stats
  *============================================================================*/
 void update_get_stats(int tid, uint32_t latency) {
-  pthread_mutex_lock(&get_latency_mutex[tid - 1]);
-  get_latency[tid - 1][latency]++;
-  pthread_mutex_unlock(&get_latency_mutex[tid - 1]);
+  pthread_mutex_lock(&g_get_latency_mutex[tid - 1]);
+  g_get_latency[tid - 1][latency]++;
+  pthread_mutex_unlock(&g_get_latency_mutex[tid - 1]);
 }
 
 /*============================================================================
@@ -876,13 +876,23 @@ void print_put_get_stats(int signum) {
   static uint64_t old_time = 0;
   static int first_time = 1;
   uint64_t cur_time;
-  uint32_t psum, pcount, pmax, pmin;
-  uint32_t gsum, gcount, gmax, gmin;
-  float pavg, gavg, pstd, gstd;
+  uint32_t psum;
+  uint32_t pcount;
+  uint32_t pmax;
+  uint32_t pmin;
+  uint32_t gsum;
+  uint32_t gcount;
+  uint32_t gmax;
+  uint32_t gmin;
+  float pavg;
+  float gavg;
+  float pstd;
+  float gstd;
   float sec_lapsed;
   uint32_t tmp_count;
   std::map<uint32_t, uint32_t>::iterator it;
-  std::map<uint32_t, uint32_t> pperc, gperc;
+  std::map<uint32_t, uint32_t> pperc;
+  std::map<uint32_t, uint32_t> gperc;
   std::ostringstream buf;
 
   // needed in some architectures
@@ -900,21 +910,23 @@ void print_put_get_stats(int signum) {
   //----------------------------------------------------------------------------
   // lock in order to exclusively access stats
   //----------------------------------------------------------------------------
-  pthread_mutex_lock(&put_latency_mutex);
-  for (int i = 0; i < num_get_threads; i++) {
-    pthread_mutex_lock(&get_latency_mutex[i]);
+  pthread_mutex_lock(&g_put_latency_mutex);
+  for (int i = 0; i < g_num_get_threads; i++) {
+    pthread_mutex_lock(&g_get_latency_mutex[i]);
   }
 
   //----------------------------------------------------------------------------
   // collect/calculate get stats
   //----------------------------------------------------------------------------
-  gsum = gcount = gavg = 0;
-  gmin = put_latency.begin()->first;
-  gmax = put_latency.begin()->first;
+  gsum = 0;
+  gcount = 0;
+  gavg = 0;
+  gmin = g_put_latency.begin()->first;
+  gmax = g_put_latency.begin()->first;
 
   // sum, count, min, max
-  for (int i = 0; i < num_get_threads; i++) {
-    for (it = get_latency[i].begin(); it != get_latency[i].end(); ++it) {
+  for (int i = 0; i < g_num_get_threads; i++) {
+    for (it = g_get_latency[i].begin(); it != g_get_latency[i].end(); ++it) {
       uint32_t latency = it->first, count = it->second;
       gsum += latency * count;
       gcount += count;
@@ -930,9 +942,11 @@ void print_put_get_stats(int signum) {
 
   // merge all maps in a single map
   std::map<uint32_t, uint32_t> tmp_map;
-  for (int i = 0; i < num_get_threads; i++) {
-    for (it = get_latency[i].begin(); it != get_latency[i].end(); ++it) {
-      tmp_map[it->first] += it->second;
+  for (int i = 0; i < g_num_get_threads; i++) {
+    for (it = g_get_latency[i].begin(); it != g_get_latency[i].end(); ++it) {
+        uint32_t latency = it->first;
+        uint32_t count = it->second;
+        tmp_map[latency] += count;
     }
   }
 
@@ -940,7 +954,8 @@ void print_put_get_stats(int signum) {
   tmp_count = 0;
   gstd = 0;
   for (it = tmp_map.begin(); it != tmp_map.end(); ++it) {
-    uint32_t latency = it->first, count = it->second;
+    uint32_t latency = it->first;
+    uint32_t count = it->second;
     tmp_count += count;
     // (a-x)^2 + ... + (a-x)^2 = n * (a-x)^2
     gstd += count * powl(latency - gavg, 2);
@@ -957,19 +972,21 @@ void print_put_get_stats(int signum) {
   //----------------------------------------------------------------------------
   // reset get stats
   //----------------------------------------------------------------------------
-  for (int i = 0; i < num_get_threads; i++) {
-    get_latency[i].clear();
+  for (int i = 0; i < g_num_get_threads; i++) {
+    g_get_latency[i].clear();
   }
 
   //----------------------------------------------------------------------------
   // collect/calculate put stats
   //----------------------------------------------------------------------------
-  psum = pcount = pavg = 0;
-  pmin = put_latency.begin()->first;
-  pmax = put_latency.begin()->first;
+  psum = 0;
+  pcount = 0;
+  pavg = 0;
+  pmin = g_put_latency.begin()->first;
+  pmax = g_put_latency.begin()->first;
 
   // sum, count, min, max
-  for (it = put_latency.begin(); it != put_latency.end(); ++it) {
+  for (it = g_put_latency.begin(); it != g_put_latency.end(); ++it) {
     uint32_t latency = it->first, count = it->second;
     psum += latency * count;
     pcount += count;
@@ -985,8 +1002,9 @@ void print_put_get_stats(int signum) {
   // median, 90% perc, 95% perc, 99% perc, 99.9% perc, std
   tmp_count = 0;
   pstd = 0;
-  for (it = put_latency.begin(); it != put_latency.end(); ++it) {
-    uint32_t latency = it->first, count = it->second;
+  for (it = g_put_latency.begin(); it != g_put_latency.end(); ++it) {
+    uint32_t latency = it->first;
+    uint32_t count = it->second;
     tmp_count += count;
     // (a-x)^2 + ... + (a-x)^2 = n * (a-x)^2
     pstd += count * powl(latency - pavg, 2);
@@ -1003,7 +1021,7 @@ void print_put_get_stats(int signum) {
   //----------------------------------------------------------------------------
   // reset put stats
   //----------------------------------------------------------------------------
-  put_latency.clear();
+  g_put_latency.clear();
 
   //----------------------------------------------------------------------------
   // calculate time passed since last call
@@ -1022,27 +1040,27 @@ void print_put_get_stats(int signum) {
   buf.str("");
   if (first_time) {
     first_time = 0;
-    if (num_get_threads) {
+    if (g_num_get_threads) {
       buf << "[GET_HEADER] (timestamp) (sec_lapsed) (count) (sum) (avg) (min) (med) (90p) (95p) (99p) (99.9p) (max) (std)" << endl;
     }
     buf << "[PUT_HEADER] (timestamp) (sec_lapsed) (count) (sum) (avg) (min) (med) (90p) (95p) (99p) (99.9p) (max) (std) (bytes_ins)" << endl;
   }
-  if (num_get_threads) {
+  if (g_num_get_threads) {
     buf << "[GET_STATS] " << cur_time << " " << sec_lapsed << " " << gcount << " " << gsum << " " << (int)gavg << " "
         << gmin << " " << gperc[500] << " " << gperc[900] << " " << gperc[950] << " " << gperc[990] << " " << gperc[999] << " " << gmax << " " << gstd << endl;
   }
   buf << "[PUT_STATS] " << cur_time << " " << sec_lapsed << " " << pcount << " " << psum << " " << (int)pavg << " "
       << pmin << " " << pperc[500] << " " << pperc[900] << " " << pperc[950] << " " << pperc[990] << " " << pperc[999] << " " << pmax << " " << pstd << " "
-      << bytes_inserted << endl;
+      << g_bytes_inserted << endl;
 
   cerr << buf.str() << flush;
 
   //----------------------------------------------------------------------------
   // resume threads
   //----------------------------------------------------------------------------
-  pthread_mutex_unlock(&put_latency_mutex);
-  for (int i = 0; i < num_get_threads; i++) {
-    pthread_mutex_unlock(&get_latency_mutex[i]);
+  pthread_mutex_unlock(&g_put_latency_mutex);
+  for (int i = 0; i < g_num_get_threads; i++) {
+    pthread_mutex_unlock(&g_get_latency_mutex[i]);
   }
 
   pthread_mutex_unlock(&mutex);
