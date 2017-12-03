@@ -32,8 +32,8 @@
 namespace leveldb = rocksdb;
 #elif defined(FLODB_COMPILE)
 namespace leveldb {
-	size_t kBigValueSize = 256;
-	int kNumThreads = 4;
+  size_t kBigValueSize = 256;
+  int kNumThreads = 4;
 }
 #endif
 
@@ -53,9 +53,10 @@ using std::flush;
 
 void     *put_routine(void *args);
 void     *get_routine(void *args);
+void     *print_stats_routine(void *args);
 void      update_put_stats(uint32_t latency);
 void      update_get_stats(int tid, uint32_t latency);
-void      print_put_get_stats(int signum);
+void      print_put_get_stats();
 void      randstr_r(char *s, const int len, uint32_t *seed);
 void      zipfstr_r(char *s, const int len, double zipf_param, uint32_t *seed);
 void      orderedstr_r(char *s, const int len, uint32_t *seed);
@@ -81,7 +82,7 @@ const int       DEFAULT_GET_THRPUT =            10;  // req per sec, 0: disable
 const int       DEFAULT_RANGE_GET_SIZE =        10;  // get 10 KVs per range get
 const bool      DEFAULT_FLUSH_PCACHE =       false;
 const bool      DEFAULT_STATS_PRINT =        false;
-const int       DEFAULT_STATS_PRINT_INTERVAL =   5;  // print stats every 5 sec
+const int       DEFAULT_STATS_PRINT_INTERVAL = 5000;  // print stats every 5 sec
 const int32_t   ZIPF_MAX_NUM =             1000000;
 const uint64_t  DEFAULT_INSERTKEYS = DEFAULT_INSERTBYTES / (DEFAULT_KEY_SIZE + DEFAULT_VALUE_SIZE);
 const bool      DEFAULT_COMPRESS_DB =        false;
@@ -109,9 +110,10 @@ struct thread_args {
 
 bool g_put_thread_finished = false;
 int g_num_get_threads = 0;
-std::map<uint32_t, uint32_t> g_put_latency;                  // put latency stats
+typedef std::map<uint32_t, uint32_t> LatencyMap;
+LatencyMap* g_put_latency;                  // put latency stats
 pthread_mutex_t g_put_latency_mutex;
-std::vector<std::map<uint32_t, uint32_t> > g_get_latency;    // get latency stats
+std::vector<LatencyMap *> g_get_latency;    // get latency stats
 std::vector<pthread_mutex_t> g_get_latency_mutex;
 uint64_t g_bytes_inserted = 0;
 
@@ -229,7 +231,8 @@ int main(int argc, char **argv) {
   leveldb::WriteOptions write_options;
   leveldb::ReadOptions read_options;
   std::vector<struct thread_args> targs;
-  pthread_t *thread;
+  pthread_t *thread,
+             stats_thread;
   struct tm *current;
   time_t now;
 
@@ -499,7 +502,7 @@ int main(int argc, char **argv) {
   //--------------------------------------------------------------------------
   // print values of parameters
   //--------------------------------------------------------------------------
-  cerr << "# memstore_size:       " << setw(15) << b2mb(memstore_size) << " MB    " << ISDEFAULT(mflag) << endl;
+  cerr << "# memstore_size:       " << setw(15) << b2mb(memstore_size) << " MB      " << ISDEFAULT(mflag) << endl;
   if (sflag) {
     cerr << "# insert_bytes:        " << setw(15) << "?     (keys and values will be read from stdin)" << endl;
     cerr << "# key_size:            " << setw(15) << "?     (keys and values will be read from stdin)" << endl;
@@ -509,7 +512,7 @@ int main(int argc, char **argv) {
     cerr << "# zipf_keys:           " << setw(15) << "?     (keys and values will be read from stdin)" << endl;
     cerr << "# ordered_keys:        " << setw(15) << "?     (keys and values will be read from stdin)" << endl;
   } else {
-    cerr << "# insert_bytes:        " << setw(15) << b2mb(insertbytes) << " MB    " << ISDEFAULT(iflag) << endl;
+    cerr << "# insert_bytes:        " << setw(15) << b2mb(insertbytes) << " MB      " << ISDEFAULT(iflag) << endl;
     cerr << "# key_size:            " << setw(15) << keysize << " B     " << ISDEFAULT(kflag) << endl;
     cerr << "# value_size:          " << setw(15) << valuesize << " B     " << ISDEFAULT(vflag) << endl;
     cerr << "# keys_to_insert:      " << setw(15) << num_keys_to_insert << endl;
@@ -549,12 +552,17 @@ int main(int argc, char **argv) {
   end_key = (char *)malloc(MAX_KEY_SIZE + 1);
   value = (char *)malloc(MAX_VALUE_SIZE + 1);
 
+  g_put_latency = new LatencyMap();
+  g_get_latency.resize(g_num_get_threads);
+  for (i = 0; i < g_num_get_threads; i++) {
+    g_get_latency[i] = new LatencyMap();
+  }
+  g_get_latency_mutex.resize(g_num_get_threads);
+
   //--------------------------------------------------------------------------
   // fill-in arguments of put thread and get threads
   //--------------------------------------------------------------------------
   targs.resize(1 + g_num_get_threads);
-  g_get_latency_mutex.resize(g_num_get_threads);
-  g_get_latency.resize(g_num_get_threads);
   for (i = 0; i < 1 + g_num_get_threads; i++) {
     targs[i].tid = i;
     targs[i].uflag = uflag;
@@ -576,32 +584,12 @@ int main(int argc, char **argv) {
     targs[i].write_options = write_options;
   }
 
-  //--------------------------------------------------------------------------
-  // set signal handler and timer for periodic printing of get latency/thrput
-  //--------------------------------------------------------------------------
   if (print_periodic_stats) {
-    struct itimerval timer;
-    if (signal(SIGALRM, print_put_get_stats) == SIG_ERR) {
-      perror("Could not set signal handler");
-      exit(EXIT_FAILURE);
-    }
-
-    timer.it_interval.tv_sec = DEFAULT_STATS_PRINT_INTERVAL;
-    timer.it_interval.tv_usec = 0;
-    timer.it_value.tv_sec = timer.it_interval.tv_sec;
-    timer.it_value.tv_usec = timer.it_interval.tv_usec;
-    if (setitimer(ITIMER_REAL, &timer, NULL) == -1) {
-      perror("Could not set timer");
-      exit(EXIT_FAILURE);
-    }
-  }
-
-  if (print_periodic_stats) {
-    print_put_get_stats(0);   // print time database was opened
+    print_put_get_stats();   // print time database was opened
   }
 
   //--------------------------------------------------------------------------
-  // create put thread and get threads
+  // create put thread, get threads and periodic stats printing thread
   //--------------------------------------------------------------------------
   thread = (pthread_t *)malloc((1 + g_num_get_threads) * sizeof(pthread_t));
   for (i = 0; i < 1 + g_num_get_threads; i++) {
@@ -615,34 +603,34 @@ int main(int argc, char **argv) {
       exit(EXIT_FAILURE);
     }
   }
+  if (print_periodic_stats) {
+    retval = pthread_create(&stats_thread, NULL, print_stats_routine, NULL);
+    if (retval) {
+      perror("pthread_create");
+      exit(EXIT_FAILURE);
+    }
+  }
 
   //--------------------------------------------------------------------------
   // wait for threads to finish
   //--------------------------------------------------------------------------
+  if (print_periodic_stats) {
+    pthread_join(stats_thread, NULL);
+  }
   for (i = 0; i < 1 + g_num_get_threads; i++) {
     pthread_join(thread[i], NULL);
-  }
-
-  if (print_periodic_stats) {
-    // print one more last time
-    print_put_get_stats(0);
-
-    // disable periodic stats print
-    struct itimerval timer;
-    timer.it_interval.tv_sec = 0;
-    timer.it_interval.tv_usec = 0;
-    timer.it_value.tv_sec = 0;
-    timer.it_value.tv_usec = 0;
-    if (setitimer(ITIMER_REAL, &timer, NULL) == -1) {
-      perror("Could not set timer");
-      exit(EXIT_FAILURE);
-    }
+    print_put_get_stats();  // print one more last time
   }
 
   time(&now);
   current = localtime(&now);
   cerr << "[DATE]    " << current->tm_mday << "/" << current->tm_mon + 1 << "/" << current->tm_year + 1900 << endl;
   cerr << "[TIME]    " << current->tm_hour << ":" << current->tm_min << ":" << current->tm_sec << endl;
+
+  delete g_put_latency;
+  for (i = 0; i < g_num_get_threads; i++) {
+    delete g_get_latency[i];
+  }
 
   free(key);
   free(end_key);
@@ -851,11 +839,25 @@ void *get_routine(void *args) {
 }
 
 /*============================================================================
+ *                            print_stats_routine
+ *============================================================================*/
+void *print_stats_routine(void *args) {
+  useconds_t us_to_sleep = DEFAULT_STATS_PRINT_INTERVAL * 1000;
+
+  while (!g_put_thread_finished) {
+    usleep(us_to_sleep);
+    print_put_get_stats();
+  }
+
+  pthread_exit(NULL);
+}
+
+/*============================================================================
  *                            update_put_stats
  *============================================================================*/
 void update_put_stats(uint32_t latency) {
   pthread_mutex_lock(&g_put_latency_mutex);
-  g_put_latency[latency]++;
+  (*g_put_latency)[latency]++;
   pthread_mutex_unlock(&g_put_latency_mutex);
 }
 
@@ -864,7 +866,7 @@ void update_put_stats(uint32_t latency) {
  *============================================================================*/
 void update_get_stats(int tid, uint32_t latency) {
   pthread_mutex_lock(&g_get_latency_mutex[tid - 1]);
-  g_get_latency[tid - 1][latency]++;
+  (*g_get_latency[tid - 1])[latency]++;
   pthread_mutex_unlock(&g_get_latency_mutex[tid - 1]);
 }
 
@@ -921,8 +923,7 @@ void calculate_statistics(const std::map<uint32_t, uint32_t>& latency,
 /*============================================================================
  *                            print_put_get_stats
  *============================================================================*/
-void print_put_get_stats(int signum) {
-  static pthread_mutex_t print_stats_mutex = PTHREAD_MUTEX_INITIALIZER;
+void print_put_get_stats() {
   static uint64_t old_time = 0;
   uint32_t psum;
   uint32_t pcount;
@@ -940,46 +941,30 @@ void print_put_get_stats(int signum) {
   std::map<uint32_t, uint32_t> pperc;
   std::map<uint32_t, uint32_t> gperc;
 
-  // needed in some architectures
-  if (signal(SIGALRM, print_put_get_stats) == SIG_ERR) {
-    perror("Could not set signal handler");
-    exit(EXIT_FAILURE);
-  }
-
-  // if mutex locked, signal was caught while last signal handling is not
-  // completed: return immediately (we'll catch next signal)
-  if (pthread_mutex_trylock(&print_stats_mutex) != 0) {
-    return;
-  }
-
   //----------------------------------------------------------------------------
   // collect/calculate get stats
   //----------------------------------------------------------------------------
 
   if (g_num_get_threads) {
+
     // lock in order to exclusively access
+    std::vector<LatencyMap *> get_latency_copy;
     for (int i = 0; i < g_num_get_threads; i++) {
       pthread_mutex_lock(&g_get_latency_mutex[i]);
+      get_latency_copy.push_back(g_get_latency[i]);
+      g_get_latency[i] = new LatencyMap();
+      pthread_mutex_unlock(&g_get_latency_mutex[i]);
     }
 
     // merge all maps in a single map
     std::map<uint32_t, uint32_t> all_get_latencies;
     for (int i = 0; i < g_num_get_threads; i++) {
-      for (it = g_get_latency[i].begin(); it != g_get_latency[i].end(); ++it) {
+      for (it = get_latency_copy[i]->begin(); it != get_latency_copy[i]->end(); ++it) {
           uint32_t latency = it->first;
           uint32_t count = it->second;
           all_get_latencies[latency] += count;
       }
-    }
-
-    // reset get stats
-    for (int i = 0; i < g_num_get_threads; i++) {
-      g_get_latency[i].clear();
-    }
-
-    // resume threads
-    for (int i = 0; i < g_num_get_threads; i++) {
-      pthread_mutex_unlock(&g_get_latency_mutex[i]);
+      delete get_latency_copy[i];
     }
 
     // calculate statistics on new map
@@ -990,18 +975,17 @@ void print_put_get_stats(int signum) {
   // collect/calculate put stats
   //----------------------------------------------------------------------------
 
-  // lock in order to exclusively access
   pthread_mutex_lock(&g_put_latency_mutex);
+  LatencyMap *put_latency_copy = g_put_latency;
+  g_put_latency = new LatencyMap();
+  pthread_mutex_unlock(&g_put_latency_mutex);
 
   // calculate statistics
-  calculate_statistics(g_put_latency, psum, pcount, pmin, pmax, pavg, pstd, pperc);
+  calculate_statistics(*put_latency_copy, psum, pcount, pmin, pmax, pavg, pstd, pperc);
   uint64_t bytes_inserted = g_bytes_inserted;
 
   // reset put stats
-  g_put_latency.clear();
-
-  // resume puth thread
-  pthread_mutex_unlock(&g_put_latency_mutex);
+  delete put_latency_copy;
 
   //----------------------------------------------------------------------------
   // print stats to stderr
@@ -1036,8 +1020,6 @@ void print_put_get_stats(int signum) {
       << bytes_inserted << endl;
 
   cerr << buf.str() << flush;
-
-  pthread_mutex_unlock(&print_stats_mutex);
 }
 
 /*============================================================================
