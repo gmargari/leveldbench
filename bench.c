@@ -27,6 +27,7 @@
 #endif
 
 #include "RequestThrottle.h"
+#include "TDigest.h"
 
 #if defined(ROCKSDB_COMPILE) || defined(TRIAD_COMPILE)
 namespace leveldb = rocksdb;
@@ -60,7 +61,7 @@ void     *get_routine(void *args);
 void     *print_stats_routine(void *args);
 void      update_put_stats(int tid, Latency latency);
 void      update_get_stats(int tid, Latency latency);
-void      print_put_get_stats();
+void      print_put_get_stats(bool print_total_stats = false);
 void      randstr_r(char *s, const int len, uint32_t *seed);
 void      zipfstr_r(char *s, const int len, double zipf_param, uint32_t *seed);
 void      orderedstr_r(char *s, const int len, uint32_t *seed);
@@ -124,6 +125,11 @@ std::vector<LatencyMap *> g_get_latencies;
 std::vector<pthread_mutex_t> g_put_latencies_mutex;
 std::vector<pthread_mutex_t> g_get_latencies_mutex;
 uint64_t g_bytes_inserted = 0;
+
+tdigest::TDigest g_put_latencies_tdigest_all;
+tdigest::TDigest g_get_latencies_tdigest_all;
+std::vector<tdigest::TDigest *> g_put_latencies_tdigest;
+std::vector<tdigest::TDigest *> g_get_latencies_tdigest;
 
 leveldb::DB *db;  // multiple get and put threads can use it concurrently, but puts will be serialized
 
@@ -575,16 +581,20 @@ int main(int argc, char **argv) {
   g_put_thread_finished.resize(g_num_put_threads);
   g_put_latencies.resize(g_num_put_threads);
   g_put_latencies_mutex.resize(g_num_put_threads);
+  g_put_latencies_tdigest.resize(g_num_put_threads);
   for (i = 0; i < g_num_put_threads; i++) {
     g_put_thread_finished[i] = false;
     g_put_latencies[i] = new LatencyMap();
+    g_put_latencies_tdigest[i] = new tdigest::TDigest();
     g_put_latencies_mutex[i] = PTHREAD_MUTEX_INITIALIZER;
   }
 
   g_get_latencies.resize(g_num_get_threads);
   g_get_latencies_mutex.resize(g_num_get_threads);
+  g_get_latencies_tdigest.resize(g_num_get_threads);
   for (i = 0; i < g_num_get_threads; i++) {
     g_get_latencies[i] = new LatencyMap();
+    g_get_latencies_tdigest[i] = new tdigest::TDigest();
     g_get_latencies_mutex[i] = PTHREAD_MUTEX_INITIALIZER;
   }
 
@@ -643,7 +653,7 @@ int main(int argc, char **argv) {
   //--------------------------------------------------------------------------
   if (print_periodic_stats) {
     pthread_join(stats_thread, NULL);
-    print_put_get_stats();  // print one more last time
+    print_put_get_stats(true);  // print one more last time
   }
   for (i = 0; i < num_total_threads; i++) {
     pthread_join(thread[i], NULL);
@@ -656,9 +666,11 @@ int main(int argc, char **argv) {
 
   for (i = 0; i < g_num_put_threads; i++) {
     delete g_put_latencies[i];
+    delete g_put_latencies_tdigest[i];
   }
   for (i = 0; i < g_num_get_threads; i++) {
     delete g_get_latencies[i];
+    delete g_get_latencies_tdigest[i];
   }
 
   free(key);
@@ -704,7 +716,9 @@ void *put_routine(void *args) {
     num_keys_to_insert = -1;  // ('num_keys_to_insert' is uint64_t)
   }
 
-  printf("[THREAD_CREATED] PUT %d\n", targs->tid); fflush(stdout);
+  std::ostringstream buf;
+  buf << "[THREAD_CREATED] PUT " << targs->tid << endl;
+  cerr << buf.str() << flush;
 
   //--------------------------------------------------------------------------
   // until we have inserted all keys
@@ -807,7 +821,9 @@ void *get_routine(void *args) {
   RequestThrottle throttler(targs->get_thrput);
   struct timeval start, end;
 
-  printf("[THREAD_CREATED] GET %d\n", targs->tid); fflush(stdout);
+  std::ostringstream buf;
+  buf << "[THREAD_CREATED] GET " << targs->tid << endl;
+  cerr << buf.str() << flush;
 
   while (!g_all_put_threads_finished) {
 
@@ -877,7 +893,9 @@ void *get_routine(void *args) {
 void *print_stats_routine(void *args) {
   useconds_t us_to_sleep = DEFAULT_STATS_PRINT_INTERVAL * 1000;
 
-  printf("[THREAD_CREATED] STATS\n"); fflush(stdout);
+  std::ostringstream buf;
+  buf << "[THREAD_CREATED] STATS" << endl;
+  cerr << buf.str() << flush;
 
   while (true) {
     // if all put threads have finished, stop
@@ -904,6 +922,7 @@ void *print_stats_routine(void *args) {
 void update_put_stats(int tid, Latency latency) {
   pthread_mutex_lock(&g_put_latencies_mutex[tid]);
   (*g_put_latencies[tid])[latency]++;
+  g_put_latencies_tdigest[tid]->add(latency);
   pthread_mutex_unlock(&g_put_latencies_mutex[tid]);
 }
 
@@ -913,11 +932,12 @@ void update_put_stats(int tid, Latency latency) {
 void update_get_stats(int tid, Latency latency) {
   pthread_mutex_lock(&g_get_latencies_mutex[tid]);
   (*g_get_latencies[tid])[latency]++;
+  g_get_latencies_tdigest[tid]->add(latency);
   pthread_mutex_unlock(&g_get_latencies_mutex[tid]);
 }
 
 /*============================================================================
- *                            print_put_get_stats
+ *                           calculate_statistics
  *============================================================================*/
 void calculate_statistics(const LatencyMap& latency,
                           Latency& lat_sum, Count& lat_count,
@@ -969,7 +989,7 @@ void calculate_statistics(const LatencyMap& latency,
 /*============================================================================
  *                            print_put_get_stats
  *============================================================================*/
-void print_put_get_stats() {
+void print_put_get_stats(bool print_total_stats) {
   static uint64_t old_time = 0;
   Latency psum;
   Count pcount;
@@ -992,17 +1012,22 @@ void print_put_get_stats() {
   //----------------------------------------------------------------------------
   if (g_num_get_threads) {
     std::vector<LatencyMap *> get_latencies_copy;
+    std::vector<const tdigest::TDigest *> get_latencies_tdigest_copy;
     get_latencies_copy.resize(g_num_get_threads);
+    get_latencies_tdigest_copy.resize(g_num_get_threads);
 
     // lock in order to exclusively access
     for (int i = 0; i < g_num_get_threads; i++) {
       pthread_mutex_lock(&g_get_latencies_mutex[i]);
       get_latencies_copy[i] = g_get_latencies[i];
       g_get_latencies[i] = new LatencyMap();
+      get_latencies_tdigest_copy[i] = g_get_latencies_tdigest[i];
+      g_get_latencies_tdigest[i] = new tdigest::TDigest();
       pthread_mutex_unlock(&g_get_latencies_mutex[i]);
     }
 
     // merge all maps in a single map
+    g_get_latencies_tdigest_all.add(get_latencies_tdigest_copy);
     LatencyMap all_get_latencies;
     for (int i = 0; i < g_num_get_threads; i++) {
       for (it = get_latencies_copy[i]->begin(); it != get_latencies_copy[i]->end(); ++it) {
@@ -1010,6 +1035,7 @@ void print_put_get_stats() {
           Count count = it->second;
           all_get_latencies[latency] += count;
       }
+      delete get_latencies_tdigest_copy[i];
       delete get_latencies_copy[i];
     }
 
@@ -1079,6 +1105,25 @@ void print_put_get_stats() {
   buf << "[PUT_STATS] " << cur_time << " " << sec_lapsed << " " << pcount << " " << psum << " " << (int)pavg << " "
       << pmin << " " << pperc[500] << " " << pperc[900] << " " << pperc[950] << " " << pperc[990] << " " << pperc[999] << " " << pmax << " " << pstd << " "
       << bytes_inserted << endl;
+
+  if (print_total_stats) {
+    if (g_num_get_threads) {
+      buf << "[GET_PERC] "
+          << (Latency)g_get_latencies_tdigest_all.quantile(0.500) << " "
+          << (Latency)g_get_latencies_tdigest_all.quantile(0.900) << " "
+          << (Latency)g_get_latencies_tdigest_all.quantile(0.950) << " "
+          << (Latency)g_get_latencies_tdigest_all.quantile(0.990) << " "
+          << (Latency)g_get_latencies_tdigest_all.quantile(0.999) << " "
+          << endl;
+
+      buf << "[GET_CDF] ";
+      for (Latency lat = 0; lat < 2000000; lat += 10) {
+        buf << lat << ":" << g_get_latencies_tdigest_all.cdf(lat) << " ";
+      }
+      buf << endl;
+    }
+  }
+
 
   cerr << buf.str() << flush;
 }

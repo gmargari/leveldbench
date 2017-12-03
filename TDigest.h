@@ -25,7 +25,13 @@
 #include <utility>
 #include <vector>
 
-#include "glog/logging.h"
+//#include "glog/logging.h"
+#define DLOG(value) if (true) { } else std::cout  // disable logging
+#define LOG(value) if (true) { } else std::cout   // disable logging
+#define CHECK_LT(v1, v2)
+#define CHECK_LE(v1, v2)
+#define CHECK_GT(v1, v2)
+#define CHECK_GE(v1, v2)
 
 namespace tdigest {
 
