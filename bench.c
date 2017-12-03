@@ -44,6 +44,10 @@ using std::setw;
 using std::right;
 using std::flush;
 
+typedef uint32_t Latency;
+typedef uint32_t Count;
+typedef std::map<Latency, Count> LatencyMap;
+
 #define b2mb(b) ((b)/(1024.0*1024.0))
 #define mb2b(mb) ((uint64_t)((mb)*(1024*1024)))
 #define max(a,b) ((a) > (b) ? (a) : (b))
@@ -54,8 +58,8 @@ using std::flush;
 void     *put_routine(void *args);
 void     *get_routine(void *args);
 void     *print_stats_routine(void *args);
-void      update_put_stats(uint32_t latency);
-void      update_get_stats(int tid, uint32_t latency);
+void      update_put_stats(Latency latency);
+void      update_get_stats(int tid, Latency latency);
 void      print_put_get_stats();
 void      randstr_r(char *s, const int len, uint32_t *seed);
 void      zipfstr_r(char *s, const int len, double zipf_param, uint32_t *seed);
@@ -111,7 +115,6 @@ struct thread_args {
 
 bool g_put_thread_finished = false;
 int g_num_get_threads = 0;
-typedef std::map<uint32_t, uint32_t> LatencyMap;
 LatencyMap* g_put_latencies;                  // put latency stats
 pthread_mutex_t g_put_latencies_mutex;
 std::vector<LatencyMap *> g_get_latencies;    // get latency stats
@@ -737,7 +740,7 @@ void *put_routine(void *args) {
     }
 
     if (print_periodic_stats) {
-      uint32_t latency;
+      Latency latency;
       gettimeofday(&end, NULL);
       latency = (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec);
       update_put_stats(latency);
@@ -820,7 +823,7 @@ void *get_routine(void *args) {
     }
 
     if (print_periodic_stats) {
-      uint32_t latency;
+      Latency latency;
       gettimeofday(&end, NULL);
       latency = (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec);
       update_get_stats(targs->tid, latency);
@@ -847,7 +850,7 @@ void *print_stats_routine(void *args) {
 /*============================================================================
  *                            update_put_stats
  *============================================================================*/
-void update_put_stats(uint32_t latency) {
+void update_put_stats(Latency latency) {
   pthread_mutex_lock(&g_put_latencies_mutex);
   (*g_put_latencies)[latency]++;
   pthread_mutex_unlock(&g_put_latencies_mutex);
@@ -856,7 +859,7 @@ void update_put_stats(uint32_t latency) {
 /*============================================================================
  *                            update_get_stats
  *============================================================================*/
-void update_get_stats(int tid, uint32_t latency) {
+void update_get_stats(int tid, Latency latency) {
   pthread_mutex_lock(&g_get_latencies_mutex[tid - 1]);
   (*g_get_latencies[tid - 1])[latency]++;
   pthread_mutex_unlock(&g_get_latencies_mutex[tid - 1]);
@@ -865,18 +868,18 @@ void update_get_stats(int tid, uint32_t latency) {
 /*============================================================================
  *                            print_put_get_stats
  *============================================================================*/
-void calculate_statistics(const std::map<uint32_t, uint32_t>& latency,
-                          uint32_t& lat_sum, uint32_t& lat_count,
-                          uint32_t& lat_min, uint32_t& lat_max,
+void calculate_statistics(const LatencyMap& latency,
+                          Latency& lat_sum, Count& lat_count,
+                          Latency& lat_min, Latency& lat_max,
                           float& lat_avg, float& lat_std,
-                          std::map<uint32_t, uint32_t>& lat_perc) {
+                          LatencyMap& lat_perc) {
   // Calculate sum, count, avg (will be needed to calculate std below)
   lat_sum = 0;
   lat_count = 0;
-  std::map<uint32_t, uint32_t>::const_iterator it;
+  LatencyMap::const_iterator it;
   for (it = latency.begin(); it != latency.end(); ++it) {
-    uint32_t latency = it->first;
-    uint32_t count = it->second;
+    Latency latency = it->first;
+    Count count = it->second;
     lat_sum += latency * count;
     lat_count += count;
   }
@@ -887,13 +890,13 @@ void calculate_statistics(const std::map<uint32_t, uint32_t>& latency,
   }
 
   // Calculate median, 90% perc, 95% perc, 99% perc, 99.9% perc, std
-  uint32_t tmp_count = 0;
+  Count tmp_count = 0;
   lat_min = latency.begin()->first;
   lat_max = latency.begin()->first;
   lat_std = 0;
   for (it = latency.begin(); it != latency.end(); ++it) {
-    uint32_t latency = it->first;
-    uint32_t count = it->second;
+    Latency latency = it->first;
+    Count count = it->second;
 
     lat_min = min(lat_min, latency);
     lat_max = max(lat_max, latency);
@@ -917,21 +920,21 @@ void calculate_statistics(const std::map<uint32_t, uint32_t>& latency,
  *============================================================================*/
 void print_put_get_stats() {
   static uint64_t old_time = 0;
-  uint32_t psum;
-  uint32_t pcount;
-  uint32_t pmax;
-  uint32_t pmin;
-  uint32_t gsum;
-  uint32_t gcount;
-  uint32_t gmax;
-  uint32_t gmin;
+  Latency psum;
+  Count pcount;
+  Latency pmax;
+  Latency pmin;
+  Latency gsum;
+  Count gcount;
+  Latency gmax;
+  Latency gmin;
   float pavg;
   float gavg;
   float pstd;
   float gstd;
-  std::map<uint32_t, uint32_t>::iterator it;
-  std::map<uint32_t, uint32_t> pperc;
-  std::map<uint32_t, uint32_t> gperc;
+  LatencyMap::iterator it;
+  LatencyMap pperc;
+  LatencyMap gperc;
 
   //----------------------------------------------------------------------------
   // collect/calculate get stats
@@ -950,11 +953,11 @@ void print_put_get_stats() {
     }
 
     // merge all maps in a single map
-    std::map<uint32_t, uint32_t> all_get_latencies;
+    LatencyMap all_get_latencies;
     for (int i = 0; i < g_num_get_threads; i++) {
       for (it = get_latencies_copy[i]->begin(); it != get_latencies_copy[i]->end(); ++it) {
-          uint32_t latency = it->first;
-          uint32_t count = it->second;
+          Latency latency = it->first;
+          Count count = it->second;
           all_get_latencies[latency] += count;
       }
       delete get_latencies_copy[i];
@@ -976,9 +979,6 @@ void print_put_get_stats() {
   // calculate statistics
   calculate_statistics(*put_latencies_copy, psum, pcount, pmin, pmax, pavg, pstd, pperc);
   uint64_t bytes_inserted = g_bytes_inserted;
-
-  // reset put stats
-  delete put_latencies_copy;
 
   //----------------------------------------------------------------------------
   // print stats to stderr
@@ -1011,6 +1011,8 @@ void print_put_get_stats() {
   buf << "[PUT_STATS] " << cur_time << " " << sec_lapsed << " " << pcount << " " << psum << " " << (int)pavg << " "
       << pmin << " " << pperc[500] << " " << pperc[900] << " " << pperc[950] << " " << pperc[990] << " " << pperc[999] << " " << pmax << " " << pstd << " "
       << bytes_inserted << endl;
+
+  delete put_latencies_copy;
 
   cerr << buf.str() << flush;
 }
