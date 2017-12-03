@@ -1048,17 +1048,22 @@ void print_put_get_stats(bool print_total_stats) {
   //----------------------------------------------------------------------------
   assert(g_num_put_threads);
   std::vector<LatencyMap *> put_latencies_copy;
+  std::vector<const tdigest::TDigest *> put_latencies_tdigest_copy;
   put_latencies_copy.resize(g_num_put_threads);
+  put_latencies_tdigest_copy.resize(g_num_put_threads);
 
   // lock in order to exclusively access
   for (int i = 0; i < g_num_put_threads; i++) {
     pthread_mutex_lock(&g_put_latencies_mutex[i]);
     put_latencies_copy[i] = g_put_latencies[i];
     g_put_latencies[i] = new LatencyMap();
+    put_latencies_tdigest_copy[i] = g_put_latencies_tdigest[i];
+    g_put_latencies_tdigest[i] = new tdigest::TDigest();
     pthread_mutex_unlock(&g_put_latencies_mutex[i]);
   }
 
   // merge all maps in a single map
+  g_put_latencies_tdigest_all.add(put_latencies_tdigest_copy);
   LatencyMap all_put_latencies;
   for (int i = 0; i < g_num_put_threads; i++) {
     for (it = put_latencies_copy[i]->begin(); it != put_latencies_copy[i]->end(); ++it) {
@@ -1122,6 +1127,19 @@ void print_put_get_stats(bool print_total_stats) {
       }
       buf << endl;
     }
+    buf << "[PUT_PERC] "
+        << (Latency)g_put_latencies_tdigest_all.quantile(0.500) << " "
+        << (Latency)g_put_latencies_tdigest_all.quantile(0.900) << " "
+        << (Latency)g_put_latencies_tdigest_all.quantile(0.950) << " "
+        << (Latency)g_put_latencies_tdigest_all.quantile(0.990) << " "
+        << (Latency)g_put_latencies_tdigest_all.quantile(0.999) << " "
+        << endl;
+
+    buf << "[PUT_CDF] ";
+    for (Latency lat = 0; lat < 2000000; lat += 10) {
+      buf << lat << ":" << g_put_latencies_tdigest_all.cdf(lat) << " ";
+    }
+    buf << endl;
   }
 
 
