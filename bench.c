@@ -64,6 +64,7 @@ int       zipf_r(double zipf_param, uint32_t *seed);
 void      check_duplicate_arg_and_set(int *flag, int opt);
 int       numdigits(uint64_t num);
 double    round(double r);
+void      create_thread(pthread_t *thread, void *(*start_routine) (void *), void *arg);
 
 // default values
 const char     *DEFAULT_DB_DIR =     "/tmp/testdb";
@@ -203,7 +204,6 @@ int main(int argc, char **argv) {
            Eflag = 0,
            myopt,
            i,
-           retval,
            indexptr,
            put_thrput,
            get_thrput,
@@ -594,21 +594,13 @@ int main(int argc, char **argv) {
   thread = (pthread_t *)malloc((1 + g_num_get_threads) * sizeof(pthread_t));
   for (i = 0; i < 1 + g_num_get_threads; i++) {
     if (i == 0) {
-      retval = pthread_create(&thread[i], NULL, put_routine, (void *)&targs[i]);
+      create_thread(&thread[i], put_routine, (void *)&targs[i]);
     } else {
-      retval = pthread_create(&thread[i], NULL, get_routine, (void *)&targs[i]);
-    }
-    if (retval) {
-      perror("pthread_create");
-      exit(EXIT_FAILURE);
+      create_thread(&thread[i], get_routine, (void *)&targs[i]);
     }
   }
   if (print_periodic_stats) {
-    retval = pthread_create(&stats_thread, NULL, print_stats_routine, NULL);
-    if (retval) {
-      perror("pthread_create");
-      exit(EXIT_FAILURE);
-    }
+    create_thread(&stats_thread, print_stats_routine, NULL);
   }
 
   //--------------------------------------------------------------------------
@@ -1187,4 +1179,15 @@ int numdigits(uint64_t num) {
  *============================================================================*/
 double round(double r) {
   return (r > 0.0) ? floor(r + 0.5) : ceil(r - 0.5);
+}
+
+/*============================================================================
+ *                           create_thread
+ *============================================================================*/
+void create_thread(pthread_t *tid, void *(*start_routine) (void *), void *arg) {
+  int retval = pthread_create(tid, NULL, start_routine, arg);
+  if (retval) {
+    perror("pthread_create");
+    exit(EXIT_FAILURE);
+  }
 }
