@@ -112,10 +112,10 @@ struct thread_args {
 bool g_put_thread_finished = false;
 int g_num_get_threads = 0;
 typedef std::map<uint32_t, uint32_t> LatencyMap;
-LatencyMap* g_put_latency;                  // put latency stats
-pthread_mutex_t g_put_latency_mutex;
-std::vector<LatencyMap *> g_get_latency;    // get latency stats
-std::vector<pthread_mutex_t> g_get_latency_mutex;
+LatencyMap* g_put_latencies;                  // put latency stats
+pthread_mutex_t g_put_latencies_mutex;
+std::vector<LatencyMap *> g_get_latencies;    // get latency stats
+std::vector<pthread_mutex_t> g_get_latencies_mutex;
 uint64_t g_bytes_inserted = 0;
 
 leveldb::DB *db;  // multiple get threads and 1 put thread can use it concurrently
@@ -552,12 +552,12 @@ int main(int argc, char **argv) {
   end_key = (char *)malloc(MAX_KEY_SIZE + 1);
   value = (char *)malloc(MAX_VALUE_SIZE + 1);
 
-  g_put_latency = new LatencyMap();
-  g_get_latency.resize(g_num_get_threads);
+  g_put_latencies = new LatencyMap();
+  g_get_latencies.resize(g_num_get_threads);
   for (i = 0; i < g_num_get_threads; i++) {
-    g_get_latency[i] = new LatencyMap();
+    g_get_latencies[i] = new LatencyMap();
   }
-  g_get_latency_mutex.resize(g_num_get_threads);
+  g_get_latencies_mutex.resize(g_num_get_threads);
 
   //--------------------------------------------------------------------------
   // fill-in arguments of put thread and get threads
@@ -619,9 +619,9 @@ int main(int argc, char **argv) {
   cerr << "[DATE]    " << current->tm_mday << "/" << current->tm_mon + 1 << "/" << current->tm_year + 1900 << endl;
   cerr << "[TIME]    " << current->tm_hour << ":" << current->tm_min << ":" << current->tm_sec << endl;
 
-  delete g_put_latency;
+  delete g_put_latencies;
   for (i = 0; i < g_num_get_threads; i++) {
-    delete g_get_latency[i];
+    delete g_get_latencies[i];
   }
 
   free(key);
@@ -848,18 +848,18 @@ void *print_stats_routine(void *args) {
  *                            update_put_stats
  *============================================================================*/
 void update_put_stats(uint32_t latency) {
-  pthread_mutex_lock(&g_put_latency_mutex);
-  (*g_put_latency)[latency]++;
-  pthread_mutex_unlock(&g_put_latency_mutex);
+  pthread_mutex_lock(&g_put_latencies_mutex);
+  (*g_put_latencies)[latency]++;
+  pthread_mutex_unlock(&g_put_latencies_mutex);
 }
 
 /*============================================================================
  *                            update_get_stats
  *============================================================================*/
 void update_get_stats(int tid, uint32_t latency) {
-  pthread_mutex_lock(&g_get_latency_mutex[tid - 1]);
-  (*g_get_latency[tid - 1])[latency]++;
-  pthread_mutex_unlock(&g_get_latency_mutex[tid - 1]);
+  pthread_mutex_lock(&g_get_latencies_mutex[tid - 1]);
+  (*g_get_latencies[tid - 1])[latency]++;
+  pthread_mutex_unlock(&g_get_latencies_mutex[tid - 1]);
 }
 
 /*============================================================================
@@ -940,23 +940,24 @@ void print_put_get_stats() {
   if (g_num_get_threads) {
 
     // lock in order to exclusively access
-    std::vector<LatencyMap *> get_latency_copy;
+    std::vector<LatencyMap *> get_latencies_copy;
+    get_latencies_copy.resize(g_num_get_threads);
     for (int i = 0; i < g_num_get_threads; i++) {
-      pthread_mutex_lock(&g_get_latency_mutex[i]);
-      get_latency_copy.push_back(g_get_latency[i]);
-      g_get_latency[i] = new LatencyMap();
-      pthread_mutex_unlock(&g_get_latency_mutex[i]);
+      pthread_mutex_lock(&g_get_latencies_mutex[i]);
+      get_latencies_copy[i] = g_get_latencies[i];
+      g_get_latencies[i] = new LatencyMap();
+      pthread_mutex_unlock(&g_get_latencies_mutex[i]);
     }
 
     // merge all maps in a single map
     std::map<uint32_t, uint32_t> all_get_latencies;
     for (int i = 0; i < g_num_get_threads; i++) {
-      for (it = get_latency_copy[i]->begin(); it != get_latency_copy[i]->end(); ++it) {
+      for (it = get_latencies_copy[i]->begin(); it != get_latencies_copy[i]->end(); ++it) {
           uint32_t latency = it->first;
           uint32_t count = it->second;
           all_get_latencies[latency] += count;
       }
-      delete get_latency_copy[i];
+      delete get_latencies_copy[i];
     }
 
     // calculate statistics on new map
@@ -967,17 +968,17 @@ void print_put_get_stats() {
   // collect/calculate put stats
   //----------------------------------------------------------------------------
 
-  pthread_mutex_lock(&g_put_latency_mutex);
-  LatencyMap *put_latency_copy = g_put_latency;
-  g_put_latency = new LatencyMap();
-  pthread_mutex_unlock(&g_put_latency_mutex);
+  pthread_mutex_lock(&g_put_latencies_mutex);
+  LatencyMap *put_latencies_copy = g_put_latencies;
+  g_put_latencies = new LatencyMap();
+  pthread_mutex_unlock(&g_put_latencies_mutex);
 
   // calculate statistics
-  calculate_statistics(*put_latency_copy, psum, pcount, pmin, pmax, pavg, pstd, pperc);
+  calculate_statistics(*put_latencies_copy, psum, pcount, pmin, pmax, pavg, pstd, pperc);
   uint64_t bytes_inserted = g_bytes_inserted;
 
   // reset put stats
-  delete put_latency_copy;
+  delete put_latencies_copy;
 
   //----------------------------------------------------------------------------
   // print stats to stderr
