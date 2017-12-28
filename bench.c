@@ -79,7 +79,7 @@ const uint32_t  MAX_VALUE_SIZE =            102400;
 const uint64_t  DEFAULT_INSERTBYTES = 1048576000LL;  // 1GB
 const uint32_t  DEFAULT_KEY_SIZE =             100;  // 100 bytes
 const uint32_t  DEFAULT_VALUE_SIZE =          1000;  // 1000 bytes
-const bool      DEFAULT_UNIQUE_KEYS =        false;
+const bool      DEFAULT_UNIQUE_KEYS =         true;
 const bool      DEFAULT_ZIPF_KEYS =          false;
 const bool      DEFAULT_ORDERED_KEYS =       false;
 const int       DEFAULT_NUM_PUT_THREADS =        1;
@@ -761,7 +761,7 @@ void *put_routine(void *args) {
       }
       if (uflag) {
         // TODO: sprintf(key, "%s", key) -> undefined behaviour!
-        sprintf(key, "%s.%llu", key, (long long)i);  // make unique
+        sprintf(key, "%.*s.%llu", keylen - numdigits(i) - 1, key, (long long)i);  // make unique
         keylen += 1 + numdigits(i);
       }
       randstr_r(value, valuesize, &vseed);
@@ -1119,6 +1119,7 @@ void print_put_get_stats(bool print_total_stats) {
           << (Latency)g_get_latencies_tdigest_all.quantile(0.950) << " "
           << (Latency)g_get_latencies_tdigest_all.quantile(0.990) << " "
           << (Latency)g_get_latencies_tdigest_all.quantile(0.999) << " "
+          << (Latency)g_get_latencies_tdigest_all.quantile(1.000) << " "  // max
           << endl;
 
       buf << "[GET_CDF] ";
@@ -1133,6 +1134,7 @@ void print_put_get_stats(bool print_total_stats) {
         << (Latency)g_put_latencies_tdigest_all.quantile(0.950) << " "
         << (Latency)g_put_latencies_tdigest_all.quantile(0.990) << " "
         << (Latency)g_put_latencies_tdigest_all.quantile(0.999) << " "
+        << (Latency)g_put_latencies_tdigest_all.quantile(1.000) << " "  // max
         << endl;
 
     buf << "[PUT_CDF] ";
@@ -1141,7 +1143,6 @@ void print_put_get_stats(bool print_total_stats) {
     }
     buf << endl;
   }
-
 
   cerr << buf.str() << flush;
 }
