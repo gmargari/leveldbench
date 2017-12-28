@@ -1041,6 +1041,19 @@ void print_put_get_stats(bool print_total_stats) {
 
     // calculate statistics on new map
     calculate_statistics(all_get_latencies, gsum, gcount, gmin, gmax, gavg, gstd, gperc);
+
+#if 0  // Print all get latencies
+    std::ostringstream buf;
+    buf.str("");
+    buf << "[GET_LATS] ";
+    for (it = all_get_latencies.begin(); it != all_get_latencies.end(); ++it) {
+        Latency latency = it->first;
+        Count count = it->second;
+        buf << latency << ":" << count << " ";
+    }
+    buf << endl;
+    cerr << buf.str() << flush;
+#endif
   }
 
   //----------------------------------------------------------------------------
